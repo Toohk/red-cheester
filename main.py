@@ -10,8 +10,6 @@ from discord.utils import get
 from dotenv import load_dotenv
 import requests
 import json
-from azure.cognitiveservices.speech import AudioDataStream, SpeechConfig, SpeechSynthesizer, SpeechSynthesisOutputFormat
-from azure.cognitiveservices.speech.audio import AudioOutputConfig
 import asyncio
 
 
