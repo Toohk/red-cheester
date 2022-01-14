@@ -1,0 +1,34 @@
+{
+	"currency":[
+		{
+			"name" : "GOLD_INGOT",
+			"points": 10,
+			"icon": "or"
+		},
+		{
+			"name": "DIAMOND",
+			"points": 50,
+			"icon": "diamant"
+		},
+		{
+			"name": "NETHERITE_INGOT",
+			"points": 1600,
+			"icon": "netherite"
+		},
+		{
+			"name" : "GOLD_BLOCK",
+			"points": 90,
+			"parent": "GOLD_INGOT"
+		},
+		{
+			"name": "DIAMOND_BLOCK",
+			"points": 450,
+			"parent": "DIAMOND"
+		},
+		{
+			"name": "NETHERITE_BLOCK",
+			"points": 14400,
+			"parent": "NETHERITE_INGOT"
+		}
+	]
+}

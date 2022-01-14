@@ -5,18 +5,40 @@ import discord
 from discord import player
 from discord.ext import commands
 from discord.voice_client import VoiceClient
-
+import MinecraftApi
+from discord.utils import get
 from discord.utils import get
 from dotenv import load_dotenv
 import requests
 import json
 import asyncio
-
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+import matplotlib.pyplot as plt
+import numpy as np
+import datetime
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import firestore
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 STEAM_API_TOKEN = os.getenv('STEAM_API_TOKEN')
+HOUR = os.getenv('HOUR')
+minecraft = {
+        "channel": int(os.getenv('MC_CHANNEL')),
+        "host": os.getenv('MC_HOST'),
+        "port": os.getenv('MC_PORT'),
+        "username": os.getenv("MC_USERNAME"),
+        "password": os.getenv("MC_PASSWORD"),
+        "cred": os.getenv("MC_CRED")
+        }
 
+
+cred = credentials.Certificate(minecraft["cred"])
+firebase_admin.initialize_app(cred)
+
+db = firestore.client()
 
 bot = commands.Bot(command_prefix='!')
 
@@ -29,6 +51,10 @@ in_speech = 0
 
 n_q = 0
 
+
+
+currencyFile = open('currency.json',)
+currency = json.load(currencyFile)["currency"]
 
 
 FFMPEG_OPTIONS = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': '-vn'}
@@ -47,17 +73,168 @@ async def nine_nine(ctx):
     response = result
     await ctx.send(response)
 
-    
 
-@bot.command(name='p')
-async def play(ctx):
-    guild = ctx.guild
-    voice_client: discord.VoiceClient = discord.utils.get(bot.voice_clients, guild=guild)
-    print('1')
+
+async def scoreboard():
+    channel = bot.get_channel(minecraft["channel"])
+    f = open('user.json')
+    users = json.load(f)
+    print(channel)
+    scoreboard = []
+    day = db.collection('minecraft').document('day').get().to_dict()["day"]
+    db.collection('minecraft').document('day').set({ "day" : day + 1 })
+
+
+    for user in users["users"]:
+
+        if "minecraft" in user:
+
+            finances = await getChests(user["minecraft"]["username"])
+            icon = {}
+            icon["business"] = discord.utils.get(bot.emojis, name = user["minecraft"]["icon-business"])
+            score = 0
+            line = ""
+            for item in currency:
+                if "icon" in item:
+                    line = f'{line}  {discord.utils.get(bot.emojis, name = item["icon"])}  {finances[item["name"]]}'
+                    score = score + (finances[item["name"]] * item["points"])
+            embedVar = discord.Embed(title=f"__**{user['minecraft']['username']}**__   ( {score:,} points )", color=user["minecraft"]["color"])
+            embedVar.add_field(name=user["minecraft"]["business"]+f"  {icon['business']}",value=line)
+            embedVar.set_thumbnail(url=user["minecraft"]["picture"])
+            scoreboard.append({"embed": embedVar, "score": score})
+
+            doc = db.collection(u"minecraft").document("scores")
+            doc.update({ user["minecraft"]["username"] : firestore.ArrayUnion([{"date":datetime.datetime.now(tz=datetime.timezone.utc), "points": score, "day": day + 1}])})
+    
+        scoreboard = sorted(scoreboard, key = lambda i: i['score'], reverse=True)
+    await channel.purge(limit=1000000)
+    for e in scoreboard:
+        await channel.send(embed=e["embed"])
+    await graph(channel)
+
+@bot.command(name='graph')
+async def graph(ctx):
+    doc = db.collection('minecraft').document('scores').get().to_dict()
+    day = db.collection('minecraft').document('day').get().to_dict()["day"]
+    f = open('user.json')
+    users = json.load(f)
+
+    for user in users["users"]:
+        if "minecraft" in user:
+            x = []
+            y = []
+            i = 0
+            last = len(doc[user["minecraft"]["username"]])
+            if day == doc[user["minecraft"]["username"]][last-1]["day"]:
+                i = 0
+            else :
+                i = day
+
+            for entry in doc[user["minecraft"]["username"]]:
+                i = i + 1
+                x.append(entry["day"])
+                y.append(entry["points"])
+            plt.plot(x, y, color=user["minecraft"]["color-name"], label=user["minecraft"]["username"])
+    plt.legend()
+    plt.xlabel("Jours")
+    plt.ylabel("Points")
+    plt.savefig('graph_figure.png')
+    plt.clf()
+    await ctx.send(file=discord.File('graph_figure.png'))
+
+@bot.event
+async def on_ready():
+
+
+    #initializing scheduler
+    scheduler = AsyncIOScheduler()
+
+    #sends "Your Message" at 12PM and 18PM (Local Time)
+    scheduler.add_job(scoreboard, CronTrigger(hour=HOUR, minute="0", second="0")) 
+
+    #starting the scheduler
+    scheduler.start()
+
+@bot.command(name='score')
+async def business(ctx):
+    
+    members = ctx.message.mentions
+    f = open('user.json')
+    users = json.load(f)
+    for user in users["users"]:
+        if user["discord_id"] == members[0].id: 
+            if "minecraft" in user:
+                finances = await getChests(user["minecraft"]["username"])
+                icon = {}
+                icon["business"] = discord.utils.get(bot.emojis, name = user["minecraft"]["icon-business"])
+                score = 0
+                line = ""
+                for item in currency:
+                    if "icon" in item:
+                        line = f'{line}  {discord.utils.get(bot.emojis, name = item["icon"])}  {finances[item["name"]]}'
+                        score = score + (finances[item["name"]] * item["points"])
+                embedVar = discord.Embed(title=f"__**{user['minecraft']['username']}**__   ( {score:,} points )", color=user["minecraft"]["color"])
+                embedVar.add_field(name=user["minecraft"]["business"]+f"  {icon['business']}",value=line)
+                embedVar.set_thumbnail(url=user["minecraft"]["picture"])
+                await ctx.send(embed=embedVar)
+            else:
+                await ctx.send("Ce joueur n'est pas coté en bourse.")
+
+
+async def getChests(minecraftUsername):
+    host = minecraft["host"]
+    port = minecraft["port"]
+    username = minecraft["username"]
+    password = minecraft["password"]
+    api = MinecraftApi.MinecraftJsonApi(host, port, username, password)
+    
+    
+    f = open('user.json')
+    users = json.load(f)
+
+    finalResult = {}
+    for user in users['users']:
+        if "minecraft" in user:
+            if user["minecraft"]["username"] == minecraftUsername:
+                chestsData = []
+                result = {}
+                methods = []
+                args = []
+                for item in currency:
+                    result[item["name"]] = 0
+                
+                for chest in user["minecraft"]["chests"]:
+                    methods.append("world.getChestContents")
+                    args.append([chest["maps"], chest["x"], chest["y"], chest["z"]])
+                    
+                data = api.call_multiple(methods,args)
+                dataJson = data.decode('utf-8') 
+                for inventory in json.loads(dataJson)["success"]:
+                    for slot in inventory["success"]:
+                        if slot:
+                            for item in currency:
+                                if slot["type"] == item["name"]:
+                                    result[slot["type"]]= result[item["name"]]+slot["amount"]
+
+                for item in currency:
+                    if "parent" in item:
+                        nb = result[item["name"]]
+                        result[item["parent"]] = int(result[item["parent"]]) + (nb * 9)
+
+                for item in currency:
+                    if "icon" in item:
+                        finalResult[item["name"]] = result[item["name"]]
+
+                return finalResult
+
+
+@bot.command(name='init_scoreboard')
+async def init_scoreboard(ctx):
+     await scoreboard()
 
 @bot.command(name='steam')
 async def steam(ctx):
-    user = ctx.author.id
+    user =ctx.author.id
     f = open('user.json',)
     users = json.load(f)
 
@@ -67,7 +244,7 @@ async def steam(ctx):
             steam_id = i["steam_id"]
         
     r = requests.get(url = "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key="+STEAM_API_TOKEN+"&steamids="+str(steam_id))
-  
+    print(r) 
     data = r.json()
 
     await ctx.send(data["response"]["players"][0]["profileurl"])
